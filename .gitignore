@@ -1,0 +1,9 @@
+# 本地数据文件（程序会写到 exe 同目录）
+/todo.txt
+/todo.txt.tmp
+
+# 构建产物
+/target
+*.pdb
+
+.DS_Store

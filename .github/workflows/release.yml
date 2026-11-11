@@ -1,0 +1,40 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: test
+        run: cargo test --locked
+
+      - name: build
+        run: cargo build --release --locked
+
+      - name: package
+        shell: pwsh
+        run: |
+          $asset = 'kido-x86_64-pc-windows-msvc.exe'
+          Copy-Item 'target/release/kido.exe' $asset
+          $hash = (Get-FileHash $asset -Algorithm SHA256).Hash.ToLower()
+          # 与 install.ps1 的校验格式保持一致：<hash>  <文件名>
+          "$hash  $asset" | Out-File -FilePath "$asset.sha256" -Encoding ascii -NoNewline
+          Get-Content "$asset.sha256"
+
+      - name: publish
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            kido-x86_64-pc-windows-msvc.exe
+            kido-x86_64-pc-windows-msvc.exe.sha256
+          generate_release_notes: true
