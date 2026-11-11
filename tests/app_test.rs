@@ -28,13 +28,17 @@ struct Fixture {
 
 impl Fixture {
     fn new(name: &str) -> Self {
+        Self::with_size(name, 70, 12)
+    }
+
+    fn with_size(name: &str, width: u16, height: u16) -> Self {
         let dir = std::env::temp_dir().join(format!("kido-it-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("todo.txt");
         fs::write(&path, SAMPLE).unwrap();
         let app = App::new(Store::load(&path).unwrap());
-        let terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
+        let terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         let mut fixture = Self {
             dir,
             app,
@@ -93,6 +97,11 @@ impl Fixture {
         });
         self.draw();
     }
+
+    /// 第一条空白行的屏幕坐标（在最后一个任务下面）。
+    fn blank_row(&self) -> u16 {
+        self.app.list_area.y + self.app.cur_len() as u16
+    }
 }
 
 impl Drop for Fixture {
@@ -105,12 +114,51 @@ impl Drop for Fixture {
 fn renders_tabs_tasks_and_counter() {
     let fixture = Fixture::new("render");
     let screen = fixture.screen();
-    assert!(screen.contains("> 工作"), "缺当前页签标记:\n{screen}");
-    assert!(screen.contains("生活"), "缺第二个页签:\n{screen}");
+    assert!(screen.contains("> 1 工作"), "缺当前页签标记:\n{screen}");
+    assert!(screen.contains("2 生活"), "缺第二个页签:\n{screen}");
     assert!(screen.contains("[ ] 写周报"), "缺任务行:\n{screen}");
     assert!(screen.contains("[x] 回邮件"), "缺已完成行:\n{screen}");
     assert!(screen.contains("1/2"), "缺计数:\n{screen}");
-    assert!(screen.contains('✎'), "缺备注标记:\n{screen}");
+}
+
+#[test]
+fn note_is_shown_inline_in_secondary_style() {
+    let fixture = Fixture::new("inline-note");
+    let screen = fixture.screen();
+    let line = screen
+        .lines()
+        .find(|line| line.contains("写周报"))
+        .expect("找不到任务行");
+    assert!(line.contains("周三前发"), "备注没显示在同一行:\n{screen}");
+    assert!(line.contains(" · "), "备注前缺分隔符:\n{screen}");
+}
+
+#[test]
+fn long_note_is_truncated_with_ellipsis() {
+    let mut fixture = Fixture::with_size("truncate", 40, 10);
+    fixture.app.store.tabs[0].tasks[0].note =
+        "这是一段很长很长的备注，长到一行绝对放不下，应该被截断并显示省略号".to_string();
+    fixture.draw();
+    let screen = fixture.screen();
+    let line = screen.lines().find(|line| line.contains("写周报")).unwrap();
+    assert!(line.contains('…'), "超长备注没有省略号:\n{screen}");
+    assert!(!line.contains("省略号"), "截断失效:\n{screen}");
+}
+
+#[test]
+fn status_does_not_hide_key_hints() {
+    let mut fixture = Fixture::new("status-row");
+    fixture.key(KeyCode::Char(' '));
+    let screen = fixture.screen();
+    assert!(screen.contains("完成 写周报"), "缺状态提示:\n{screen}");
+    assert!(screen.contains("新建"), "按键提示被覆盖:\n{screen}");
+    assert!(screen.contains("帮助"), "按键提示被覆盖:\n{screen}");
+    let status_y = screen
+        .lines()
+        .position(|line| line.contains("完成 写周报"))
+        .unwrap();
+    let hint_y = screen.lines().position(|line| line.contains("帮助")).unwrap();
+    assert!(status_y < hint_y, "状态提示应在提示行之上:\n{screen}");
 }
 
 #[test]
@@ -136,6 +184,79 @@ fn right_click_opens_note_instead_of_toggling() {
 }
 
 #[test]
+fn double_click_on_blank_area_starts_new_task() {
+    let mut fixture = Fixture::new("blank-dbl");
+    let row = fixture.blank_row();
+    let x = fixture.app.list_area.x + 3;
+    fixture.click(MouseButton::Left, x, row);
+    assert!(matches!(fixture.app.mode, Mode::Normal), "单击不该弹窗");
+    fixture.click(MouseButton::Left, x, row);
+    assert!(matches!(fixture.app.mode, Mode::Prompt(_)), "双击应弹新建");
+}
+
+#[test]
+fn right_click_on_blank_area_starts_new_task() {
+    let mut fixture = Fixture::new("blank-right");
+    let row = fixture.blank_row();
+    let x = fixture.app.list_area.x + 3;
+    fixture.click(MouseButton::Right, x, row);
+    assert!(matches!(fixture.app.mode, Mode::Prompt(_)));
+}
+
+#[test]
+fn clicking_outside_popup_closes_it() {
+    let mut fixture = Fixture::new("outside");
+    let row = fixture.app.list_area.y;
+    fixture.click(MouseButton::Right, fixture.app.list_area.x + 2, row);
+    assert!(matches!(fixture.app.mode, Mode::Note(_)));
+
+    fixture.click(MouseButton::Left, 0, 0);
+    assert!(
+        matches!(fixture.app.mode, Mode::Normal),
+        "点窗口外应关闭弹窗"
+    );
+}
+
+#[test]
+fn clicking_inside_popup_keeps_it_open() {
+    let mut fixture = Fixture::new("inside");
+    fixture.key(KeyCode::Char('n'));
+    let rect = fixture.app.popup_rect;
+    assert!(rect.width > 0);
+    fixture.click(MouseButton::Left, rect.x + 2, rect.y + 1);
+    assert!(matches!(fixture.app.mode, Mode::Prompt(_)));
+}
+
+#[test]
+fn tasks_can_be_moved_and_sent_to_top() {
+    let mut fixture = Fixture::new("reorder");
+    assert_eq!(fixture.app.store.tabs[0].tasks[0].text, "写周报");
+
+    fixture.key(KeyCode::Char('J'));
+    assert_eq!(fixture.app.store.tabs[0].tasks[0].text, "回邮件");
+    assert_eq!(fixture.app.sel, 1);
+
+    fixture.key(KeyCode::Char('K'));
+    assert_eq!(fixture.app.store.tabs[0].tasks[0].text, "写周报");
+
+    fixture.key(KeyCode::End);
+    assert_eq!(fixture.app.sel, 1);
+    fixture.key_with(KeyCode::Home, KeyModifiers::CONTROL);
+    assert_eq!(fixture.app.store.tabs[0].tasks[0].text, "回邮件");
+    assert_eq!(fixture.app.sel, 0);
+}
+
+#[test]
+fn alt_arrows_reorder_tasks() {
+    let mut fixture = Fixture::new("reorder-alt");
+    fixture.key(KeyCode::End);
+    fixture.key_with(KeyCode::Up, KeyModifiers::ALT);
+    assert_eq!(fixture.app.sel, 0);
+    assert_eq!(fixture.app.store.tabs[0].tasks[0].text, "回邮件");
+    assert_eq!(fixture.app.store.tabs[0].tasks[1].text, "写周报");
+}
+
+#[test]
 fn clicking_a_tab_switches() {
     let mut fixture = Fixture::new("tabswitch");
     let (x0, x1, idx) = fixture.app.tab_ranges[1];
@@ -145,6 +266,19 @@ fn clicking_a_tab_switches() {
     fixture.click(MouseButton::Left, x, row);
     assert_eq!(fixture.app.tab, 1);
     assert_eq!(fixture.app.store.tabs[1].tasks[0].text, "买菜");
+}
+
+#[test]
+fn right_click_on_tab_asks_to_delete_it() {
+    let mut fixture = Fixture::new("tabdel");
+    let (x0, x1, _) = fixture.app.tab_ranges[1];
+    let x = x0 + (x1 - x0) / 2;
+    let row = fixture.app.tabs_row;
+    fixture.click(MouseButton::Right, x, row);
+    assert!(matches!(fixture.app.mode, Mode::Confirm(_)));
+    fixture.key(KeyCode::Char('y'));
+    assert_eq!(fixture.app.store.tabs.len(), 1);
+    assert!(!fixture.saved().contains("买菜"));
 }
 
 #[test]
@@ -227,4 +361,3 @@ fn external_edit_is_picked_up() {
     assert_eq!(fixture.app.store.tabs[0].name, "外部");
     assert!(fixture.screen().contains("换过了"));
 }
-

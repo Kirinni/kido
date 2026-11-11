@@ -11,6 +11,7 @@ use crate::editor::{LineInput, NoteEditor};
 use crate::store::{Store, Tab, Task, DEFAULT_TAB};
 
 const STATUS_TTL: Duration = Duration::from_secs(3);
+const DOUBLE_CLICK: Duration = Duration::from_millis(500);
 const UNDO_LIMIT: usize = 200;
 
 pub enum Mode {
@@ -19,6 +20,20 @@ pub enum Mode {
     Note(NoteState),
     Confirm(ConfirmState),
     Help,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum StatusKind {
+    Info,
+    Ok,
+    Warn,
+    Error,
+}
+
+pub struct Status {
+    pub message: String,
+    pub kind: StatusKind,
+    at: Instant,
 }
 
 pub enum PromptKind {
@@ -48,6 +63,8 @@ pub struct NoteState {
     pub tab: usize,
     pub idx: usize,
     pub editor: NoteEditor,
+    /// 打开时的备注快照，用来判断有没有真的改过。
+    pub original: String,
 }
 
 pub enum ConfirmAction {
@@ -65,13 +82,16 @@ pub struct App {
     pub sel: usize,
     pub scroll: usize,
     pub mode: Mode,
-    pub status: Option<(String, Instant)>,
+    pub status: Option<Status>,
     pub quit: bool,
     /// 上一次绘制得到的列表区域，鼠标命中测试用。
     pub list_area: Rect,
+    /// 当前弹窗的屏幕范围；点空白处靠它判断内外。
+    pub popup_rect: Rect,
     /// 页签所在行与每个页签的横向范围。
     pub tabs_row: u16,
     pub tab_ranges: Vec<(u16, u16, usize)>,
+    last_blank_click: Option<(Instant, u16)>,
     undo: Vec<Vec<Tab>>,
 }
 
@@ -89,8 +109,10 @@ impl App {
             status: None,
             quit: false,
             list_area: Rect::default(),
+            popup_rect: Rect::default(),
             tabs_row: 0,
             tab_ranges: Vec::new(),
+            last_blank_click: None,
             undo: Vec::new(),
         }
     }
@@ -112,14 +134,34 @@ impl App {
     }
 
     pub fn set_status(&mut self, message: impl Into<String>) {
-        self.status = Some((message.into(), Instant::now()));
+        self.set_status_kind(message, StatusKind::Info);
+    }
+
+    pub fn set_ok(&mut self, message: impl Into<String>) {
+        self.set_status_kind(message, StatusKind::Ok);
+    }
+
+    pub fn set_warn(&mut self, message: impl Into<String>) {
+        self.set_status_kind(message, StatusKind::Warn);
+    }
+
+    pub fn set_error(&mut self, message: impl Into<String>) {
+        self.set_status_kind(message, StatusKind::Error);
+    }
+
+    fn set_status_kind(&mut self, message: impl Into<String>, kind: StatusKind) {
+        self.status = Some(Status {
+            message: message.into(),
+            kind,
+            at: Instant::now(),
+        });
     }
 
     pub fn tick(&mut self) {
         let expired = self
             .status
             .as_ref()
-            .is_some_and(|(_, at)| at.elapsed() >= STATUS_TTL);
+            .is_some_and(|status| status.at.elapsed() >= STATUS_TTL);
         if expired {
             self.status = None;
         }
@@ -130,7 +172,7 @@ impl App {
                     self.set_status("已从磁盘重新载入");
                 }
                 Ok(false) => {}
-                Err(err) => self.set_status(format!("读取失败: {err}")),
+                Err(err) => self.set_error(format!("读取失败: {err}")),
             }
         }
     }
@@ -175,7 +217,7 @@ impl App {
 
     fn save(&mut self) {
         if let Err(err) = self.store.save() {
-            self.set_status(format!("保存失败: {err}"));
+            self.set_error(format!("保存失败: {err}"));
         }
     }
 
@@ -199,7 +241,7 @@ impl App {
             format!("{} {}", if task.done { "完成" } else { "取消" }, task.text)
         };
         self.save();
-        self.set_status(message);
+        self.set_ok(message);
     }
 
     pub fn add_task(&mut self, text: &str) {
@@ -219,7 +261,7 @@ impl App {
         let height = self.list_height();
         self.ensure_visible(height);
         self.save();
-        self.set_status(format!("已添加 {text}"));
+        self.set_ok(format!("已添加 {text}"));
     }
 
     pub fn rename_task(&mut self, idx: usize, text: &str) {
@@ -237,7 +279,7 @@ impl App {
             task.text = text.to_string();
         }
         self.save();
-        self.set_status(format!("已改名 {text}"));
+        self.set_ok(format!("已改名 {text}"));
     }
 
     pub fn delete_task(&mut self, idx: usize) {
@@ -253,7 +295,7 @@ impl App {
         self.clamp();
         self.save();
         if let Some(text) = removed {
-            self.set_status(format!("已删除 {text} · u 撤销"));
+            self.set_warn(format!("已删除 {text} · u 撤销"));
         }
     }
 
@@ -278,7 +320,51 @@ impl App {
             task.note = normalized;
         }
         self.save();
-        self.set_status("备注已保存 · u 撤销");
+        self.set_ok("备注已保存 · u 撤销");
+    }
+
+    /// 上下移动任务；`delta` 为 -1 上移、1 下移。
+    pub fn move_task(&mut self, delta: i32) {
+        let len = self.cur_len();
+        if len < 2 {
+            return;
+        }
+        let target = self.sel as i64 + delta as i64;
+        if target < 0 || target >= len as i64 {
+            return;
+        }
+        self.snapshot();
+        let target = target as usize;
+        if let Some(tab) = self.store.tabs.get_mut(self.tab) {
+            tab.tasks.swap(self.sel, target);
+        }
+        self.sel = target;
+        let height = self.list_height();
+        self.ensure_visible(height);
+        self.save();
+        self.set_status(if delta < 0 { "已上移" } else { "已下移" });
+    }
+
+    /// 移到列表首位或末尾。
+    pub fn move_task_to_edge(&mut self, to_end: bool) {
+        let len = self.cur_len();
+        if len < 2 {
+            return;
+        }
+        let target = if to_end { len - 1 } else { 0 };
+        if target == self.sel {
+            return;
+        }
+        self.snapshot();
+        if let Some(tab) = self.store.tabs.get_mut(self.tab) {
+            let task = tab.tasks.remove(self.sel);
+            tab.tasks.insert(target, task);
+        }
+        self.sel = target;
+        let height = self.list_height();
+        self.ensure_visible(height);
+        self.save();
+        self.set_status(if to_end { "已移到末尾" } else { "已移到首位" });
     }
 
     pub fn add_tab(&mut self, name: &str) {
@@ -290,7 +376,7 @@ impl App {
         self.sel = 0;
         self.scroll = 0;
         self.save();
-        self.set_status(format!("已新建页签 {name}"));
+        self.set_ok(format!("已新建页签 {name}"));
     }
 
     pub fn rename_tab(&mut self, idx: usize, name: &str) {
@@ -303,12 +389,12 @@ impl App {
             tab.name = name.to_string();
         }
         self.save();
-        self.set_status(format!("页签已改名 {name}"));
+        self.set_ok(format!("页签已改名 {name}"));
     }
 
     pub fn delete_tab(&mut self, idx: usize) {
         if self.store.tabs.len() <= 1 {
-            self.set_status("至少保留一个页签");
+            self.set_warn("至少保留一个页签");
             return;
         }
         if idx >= self.store.tabs.len() {
@@ -325,7 +411,7 @@ impl App {
         self.sel = 0;
         self.scroll = 0;
         self.save();
-        self.set_status(format!("已删除页签 {} · u 撤销", removed.name));
+        self.set_warn(format!("已删除页签 {} · u 撤销", removed.name));
     }
 
     pub fn undo(&mut self) {
@@ -336,7 +422,7 @@ impl App {
                 self.save();
                 self.set_status("已撤销");
             }
-            None => self.set_status("没有可撤销的操作"),
+            None => self.set_warn("没有可撤销的操作"),
         }
     }
 
@@ -390,11 +476,28 @@ impl App {
 
     fn key_normal(&mut self, key: KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+
+        if alt {
+            match key.code {
+                KeyCode::Up => self.move_task(-1),
+                KeyCode::Down => self.move_task(1),
+                KeyCode::Home => self.move_task_to_edge(false),
+                KeyCode::End => self.move_task_to_edge(true),
+                _ => {}
+            }
+            return;
+        }
+
         match key.code {
             KeyCode::Char('c') if ctrl => self.quit = true,
             KeyCode::Esc | KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('j') | KeyCode::Down => self.move_sel(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_sel(-1),
+            KeyCode::Char('J') => self.move_task(1),
+            KeyCode::Char('K') => self.move_task(-1),
+            KeyCode::Home if ctrl => self.move_task_to_edge(false),
+            KeyCode::End if ctrl => self.move_task_to_edge(true),
             KeyCode::Char('g') | KeyCode::Home => {
                 self.sel = 0;
                 self.scroll = 0;
@@ -485,11 +588,11 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc => {
-                self.set_note(state.tab, state.idx, &state.editor.text());
+                self.commit_note(state);
                 Mode::Normal
             }
             KeyCode::Char('s') if ctrl => {
-                self.set_note(state.tab, state.idx, &state.editor.text());
+                self.commit_note(state);
                 Mode::Normal
             }
             KeyCode::Enter => {
@@ -541,8 +644,18 @@ impl App {
         }
     }
 
+    fn commit_note(&mut self, state: NoteState) {
+        let text = state.editor.text();
+        if text != state.original {
+            self.set_note(state.tab, state.idx, &text);
+        }
+    }
+
     fn key_confirm(&mut self, key: KeyEvent, state: ConfirmState) -> Mode {
-        if matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter) {
+        if matches!(
+            key.code,
+            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter
+        ) {
             match state.action {
                 ConfirmAction::DeleteTab(idx) => self.delete_tab(idx),
             }
@@ -551,6 +664,12 @@ impl App {
     }
 
     pub fn on_mouse(&mut self, event: MouseEvent) {
+        if !matches!(self.mode, Mode::Normal) {
+            if matches!(event.kind, MouseEventKind::Down(_)) {
+                self.on_modal_click(event);
+            }
+            return;
+        }
         match event.kind {
             MouseEventKind::ScrollUp => self.move_sel(-1),
             MouseEventKind::ScrollDown => self.move_sel(1),
@@ -559,10 +678,25 @@ impl App {
         }
     }
 
-    fn on_click(&mut self, button: MouseButton, event: MouseEvent) {
-        if !matches!(self.mode, Mode::Normal) {
+    /// 点弹窗外面就关掉它；备注照 Esc 的规则保存。
+    fn on_modal_click(&mut self, event: MouseEvent) {
+        if !matches!(event.kind, MouseEventKind::Down(MouseButton::Left)) {
             return;
         }
+        let rect = self.popup_rect;
+        let inside = rect.width > 0
+            && rect.height > 0
+            && rect.contains((event.column, event.row).into());
+        if inside {
+            return;
+        }
+        let mode = std::mem::replace(&mut self.mode, Mode::Normal);
+        if let Mode::Note(state) = mode {
+            self.commit_note(state);
+        }
+    }
+
+    fn on_click(&mut self, button: MouseButton, event: MouseEvent) {
         if event.row == self.tabs_row {
             let hit = self
                 .tab_ranges
@@ -570,7 +704,10 @@ impl App {
                 .find(|(x0, x1, _)| event.column >= *x0 && event.column < *x1)
                 .map(|(_, _, idx)| *idx);
             if let Some(idx) = hit {
-                self.switch_tab(idx);
+                match button {
+                    MouseButton::Right => self.ask_delete_tab(idx),
+                    _ => self.switch_tab(idx),
+                }
             }
             return;
         }
@@ -584,6 +721,12 @@ impl App {
         }
         let idx = self.scroll + (event.row - area.y) as usize;
         if idx >= self.cur_len() {
+            // 空白处：右键直接新建，左键双击新建
+            match button {
+                MouseButton::Right => self.start_prompt(PromptKind::NewTask),
+                MouseButton::Left => self.blank_click(event),
+                _ => {}
+            }
             return;
         }
         self.sel = idx;
@@ -593,6 +736,19 @@ impl App {
             MouseButton::Left => self.toggle(idx),
             MouseButton::Right => self.start_note(),
             _ => {}
+        }
+    }
+
+    fn blank_click(&mut self, event: MouseEvent) {
+        let now = Instant::now();
+        let double = self
+            .last_blank_click
+            .is_some_and(|(at, row)| row == event.row && now.duration_since(at) < DOUBLE_CLICK);
+        if double {
+            self.last_blank_click = None;
+            self.start_prompt(PromptKind::NewTask);
+        } else {
+            self.last_blank_click = Some((now, event.row));
         }
     }
 
@@ -630,19 +786,24 @@ impl App {
             tab: self.tab,
             idx: self.sel,
             editor: NoteEditor::from_text(&note),
+            original: crate::store::normalize_note(&note),
         });
     }
 
     fn ask_delete_tab(&mut self, idx: usize) {
         if self.store.tabs.len() <= 1 {
-            self.set_status("至少保留一个页签");
+            self.set_warn("至少保留一个页签");
             return;
         }
         let Some(tab) = self.store.tabs.get(idx) else {
             return;
         };
         self.mode = Mode::Confirm(ConfirmState {
-            question: format!("删除页签「{}」及其 {} 个任务？", tab.name, tab.tasks.len()),
+            question: format!(
+                "删除页签「{}」及其 {} 个任务？",
+                tab.name,
+                tab.tasks.len()
+            ),
             action: ConfirmAction::DeleteTab(idx),
         });
     }
@@ -650,10 +811,9 @@ impl App {
     fn open_data_file(&mut self) {
         let path = self.store.path.clone();
         self.save();
-        let spawned = open_in_default_app(&path);
-        match spawned {
+        match open_in_default_app(&path) {
             Ok(()) => self.set_status(format!("已打开 {}", path.display())),
-            Err(err) => self.set_status(format!("打不开 {}: {err}", path.display())),
+            Err(err) => self.set_error(format!("打不开 {}: {err}", path.display())),
         }
     }
 }

@@ -1,4 +1,4 @@
-//! 渲染：页签栏 / 任务列表 / 状态栏 / 弹窗。
+//! 渲染：页签栏 / 任务列表 / 状态行 / 快捷键提示 / 弹窗。
 
 use std::path::Path;
 
@@ -9,20 +9,43 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use ratatui::Frame;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{App, ConfirmState, Mode, NoteState, PromptState};
+use crate::app::{App, ConfirmState, Mode, NoteState, PromptState, StatusKind};
+use crate::store::Task;
 
-const ACCENT: Color = Color::Rgb(92, 232, 168);
-const DIM: Color = Color::Rgb(108, 126, 132);
-const TEXT: Color = Color::Rgb(226, 236, 239);
-const SEL_BG: Color = Color::Rgb(31, 56, 48);
-const WARN: Color = Color::Rgb(240, 180, 90);
+const DIM: Color = Color::Rgb(104, 120, 128);
+const TEXT: Color = Color::Rgb(230, 238, 241);
+const NOTE: Color = Color::Rgb(138, 152, 158);
+const SEL_BG: Color = Color::Rgb(30, 54, 46);
+const WARN: Color = Color::Rgb(240, 186, 96);
+const ERROR: Color = Color::Rgb(240, 108, 108);
+const KEY: Color = Color::Rgb(126, 206, 226);
 
-const HINT: &str =
-    " n 新建 · Space 勾选 · e 备注 · d 删除 · t 页签 · Tab 切换 · ? 帮助";
+/// 每个页签一个主题色，按顺序循环。
+const PALETTE: [Color; 6] = [
+    Color::Rgb(92, 232, 168),
+    Color::Rgb(122, 176, 255),
+    Color::Rgb(198, 152, 255),
+    Color::Rgb(255, 190, 118),
+    Color::Rgb(255, 138, 178),
+    Color::Rgb(112, 214, 226),
+];
+
+fn accent(app: &App) -> Color {
+    PALETTE[app.tab % PALETTE.len()]
+}
+
+const HINTS: &[(&str, &str)] = &[
+    ("n", "新建"),
+    ("Space", "勾选"),
+    ("e", "备注"),
+    ("d", "删除"),
+    ("Tab", "切换页签"),
+    ("?", "帮助"),
+];
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
-    if area.width < 24 || area.height < 6 {
+    if area.width < 24 || area.height < 8 {
         frame.render_widget(
             Paragraph::new("窗口太小").style(Style::default().fg(WARN)),
             area,
@@ -30,10 +53,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
 
-    let [tabs_area, rule_top, list_area, rule_bottom, status_area] = Layout::vertical([
+    let [tabs_area, rule_top, list_area, rule_bottom, status_area, hint_area] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Min(1),
+        Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
     ])
@@ -44,13 +68,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_list(frame, app, list_area);
     draw_rule(frame, rule_bottom);
     draw_status(frame, app, status_area);
+    draw_hint(frame, hint_area);
     draw_mode(frame, app, area);
 }
 
 fn draw_rule(frame: &mut Frame, area: Rect) {
     let line = Line::from(Span::styled(
         "─".repeat(area.width as usize),
-        Style::default().fg(DIM),
+        Style::default().fg(Color::Rgb(58, 74, 78)),
     ));
     frame.render_widget(Paragraph::new(line), area);
 }
@@ -58,18 +83,18 @@ fn draw_rule(frame: &mut Frame, area: Rect) {
 fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
     let counter = {
         let tab = app.cur();
-        format!(
-            "{}/{}",
+        (
             tab.map_or(0, |t| t.done_count()),
-            tab.map_or(0, |t| t.tasks.len())
+            tab.map_or(0, |t| t.tasks.len()),
         )
     };
-    let counter_width = UnicodeWidthStr::width(counter.as_str()) as u16;
+    let counter_text = format!("{}/{}", counter.0, counter.1);
+    let counter_width = UnicodeWidthStr::width(counter_text.as_str()) as u16;
 
     let mut tabs_area = area;
     let mut counter_area = area;
-    if area.width > counter_width + 6 {
-        tabs_area.width = area.width - counter_width - 2;
+    if area.width > counter_width + 8 {
+        tabs_area.width = area.width - counter_width - 3;
         counter_area.x = area.right() - counter_width;
         counter_area.width = counter_width;
     } else {
@@ -81,20 +106,23 @@ fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut x = tabs_area.x;
     for (idx, tab) in app.store.tabs.iter().enumerate() {
         let active = idx == app.tab;
-        let label = format!("{}{}", if active { "> " } else { "  " }, tab.name);
+        let color = PALETTE[idx % PALETTE.len()];
+        let label = format!("{}{} {}", if active { "> " } else { "  " }, idx + 1, tab.name);
         let width = UnicodeWidthStr::width(label.as_str()) as u16;
         if x + width > tabs_area.right() {
             break;
         }
         ranges.push((x, x + width, idx));
         let style = if active {
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(color)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
         } else {
             Style::default().fg(DIM)
         };
         spans.push(Span::styled(label, style));
-        spans.push(Span::raw("  "));
-        x += width + 2;
+        spans.push(Span::styled("│", Style::default().fg(Color::Rgb(52, 66, 70))));
+        x += width + 1;
     }
     app.tab_ranges = ranges;
     app.tabs_row = area.y;
@@ -102,8 +130,11 @@ fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(Paragraph::new(Line::from(spans)), tabs_area);
     if counter_area.width > 0 {
         frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(counter, Style::default().fg(DIM))))
-                .alignment(Alignment::Right),
+            Paragraph::new(Line::from(Span::styled(
+                counter_text,
+                Style::default().fg(DIM),
+            )))
+            .alignment(Alignment::Right),
             counter_area,
         );
     }
@@ -115,52 +146,23 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
     app.ensure_visible(height);
     let width = area.width as usize;
     let total = app.cur_len();
+    let accent = accent(app);
 
     let mut lines: Vec<Line> = Vec::new();
     if total == 0 {
-        lines.push(Line::from(Span::styled(
-            "  空 · 按 n 新建任务",
-            Style::default().fg(DIM),
-        )));
+        lines.push(Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled(
+                "空 · 双击空白处或按 n 新建任务",
+                Style::default().fg(DIM),
+            ),
+        ]));
     } else {
         let end = (app.scroll + height).min(total);
         for idx in app.scroll..end {
             let task = &app.store.tabs[app.tab].tasks[idx];
             let selected = idx == app.sel;
-            let has_note = task.has_note();
-            let room = width.saturating_sub(6 + usize::from(has_note) * 2);
-            let text = truncate(&task.text, room);
-            let used = 6 + UnicodeWidthStr::width(text.as_str()) + usize::from(has_note) * 2;
-
-            let text_style = if task.done {
-                Style::default().fg(DIM).add_modifier(Modifier::CROSSED_OUT)
-            } else {
-                Style::default().fg(TEXT)
-            };
-            let mark_style = if task.done {
-                Style::default().fg(DIM)
-            } else {
-                Style::default().fg(ACCENT)
-            };
-            let gutter_style = if selected {
-                Style::default().fg(ACCENT)
-            } else {
-                Style::default()
-            };
-
-            let mut spans = vec![
-                Span::styled(if selected { "▌ " } else { "  " }, gutter_style),
-                Span::styled(if task.done { "[x] " } else { "[ ] " }, mark_style),
-                Span::styled(text, text_style),
-            ];
-            if has_note {
-                spans.push(Span::styled(" ✎", Style::default().fg(DIM)));
-            }
-            if used < width {
-                spans.push(Span::raw(" ".repeat(width - used)));
-            }
-
-            let mut line = Line::from(spans);
+            let mut line = Line::from(task_spans(task, width, selected, accent));
             if selected {
                 line = line.style(Style::default().bg(SEL_BG));
             }
@@ -171,60 +173,161 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
+fn task_spans(task: &Task, width: usize, selected: bool, accent: Color) -> Vec<Span<'static>> {
+    let mut spans: Vec<Span> = Vec::new();
+
+    let gutter_style = if selected {
+        Style::default().fg(accent)
+    } else {
+        Style::default()
+    };
+    spans.push(Span::styled(
+        if selected { "▌ " } else { "  " },
+        gutter_style,
+    ));
+
+    let mark_style = if task.done {
+        Style::default().fg(Color::Rgb(72, 92, 96))
+    } else {
+        Style::default().fg(accent)
+    };
+    spans.push(Span::styled(
+        if task.done { "[x] " } else { "[ ] " },
+        mark_style,
+    ));
+
+    let indent = 6;
+    let avail = width.saturating_sub(indent);
+    let text_style = if task.done {
+        Style::default().fg(DIM).add_modifier(Modifier::CROSSED_OUT)
+    } else {
+        Style::default().fg(TEXT)
+    };
+
+    let note = first_line(&task.note);
+    let mut used = indent;
+
+    match note {
+        None => {
+            let text = truncate(&task.text, avail);
+            used += UnicodeWidthStr::width(text.as_str());
+            spans.push(Span::styled(text, text_style));
+        }
+        Some(note) => {
+            // 任务名最多占 2/3，留出位置显示备注摘要
+            let text_cap = (avail * 2 / 3).max(6);
+            let text = truncate(&task.text, text_cap);
+            let text_width = UnicodeWidthStr::width(text.as_str());
+            used += text_width;
+            spans.push(Span::styled(text, text_style));
+
+            let rest = avail.saturating_sub(text_width);
+            if rest > 4 {
+                let note_text = truncate(note, rest - 3);
+                let note_width = UnicodeWidthStr::width(note_text.as_str());
+                used += 3 + note_width;
+                spans.push(Span::styled(" · ", Style::default().fg(DIM)));
+                spans.push(Span::styled(note_text, Style::default().fg(NOTE)));
+            }
+        }
+    }
+
+    if used < width {
+        spans.push(Span::raw(" ".repeat(width - used)));
+    }
+    spans
+}
+
+fn first_line(note: &str) -> Option<&str> {
+    note.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+}
+
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let span = match &app.status {
-        Some((message, _)) => Span::styled(format!(" {message}"), Style::default().fg(ACCENT)),
-        None => Span::styled(HINT, Style::default().fg(DIM)),
+        Some(status) => {
+            let color = match status.kind {
+                StatusKind::Info => KEY,
+                StatusKind::Ok => accent(app),
+                StatusKind::Warn => WARN,
+                StatusKind::Error => ERROR,
+            };
+            Span::styled(format!(" {}", status.message), Style::default().fg(color))
+        }
+        None => Span::raw(""),
     };
     frame.render_widget(Paragraph::new(Line::from(span)), area);
 }
 
-fn draw_mode(frame: &mut Frame, app: &App, area: Rect) {
-    match &app.mode {
-        Mode::Normal => {}
+fn draw_hint(frame: &mut Frame, area: Rect) {
+    let mut spans: Vec<Span> = vec![Span::raw(" ")];
+    for (i, (key, desc)) in HINTS.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" · ", Style::default().fg(Color::Rgb(58, 74, 78))));
+        }
+        spans.push(Span::styled(*key, Style::default().fg(KEY)));
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(*desc, Style::default().fg(DIM)));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+fn draw_mode(frame: &mut Frame, app: &mut App, area: Rect) {
+    let mode = std::mem::replace(&mut app.mode, Mode::Normal);
+    let popup = match &mode {
+        Mode::Normal => Rect::default(),
         Mode::Prompt(state) => draw_prompt(frame, state, area),
         Mode::Note(state) => draw_note(frame, state, area),
         Mode::Confirm(state) => draw_confirm(frame, state, area),
         Mode::Help => draw_help(frame, &app.store.path, area),
-    }
+    };
+    app.mode = mode;
+    app.popup_rect = popup;
 }
 
-fn draw_prompt(frame: &mut Frame, state: &PromptState, area: Rect) {
+fn draw_prompt(frame: &mut Frame, state: &PromptState, area: Rect) -> Rect {
     let width = 56.min(area.width.saturating_sub(4)).max(16);
     let rect = centered(area, width, 3);
     frame.render_widget(Clear, rect);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(ACCENT))
+        .border_style(Style::default().fg(KEY))
         .title(Span::styled(
             format!(" {} ", state.title()),
-            Style::default().fg(ACCENT),
+            Style::default().fg(KEY).add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
 
-    let text = state.input.value();
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(text, Style::default().fg(TEXT)))),
+        Paragraph::new(Line::from(Span::styled(
+            state.input.value(),
+            Style::default().fg(TEXT),
+        ))),
         inner,
     );
 
     let before = state.input.before_cursor();
     let offset = (UnicodeWidthStr::width(before.as_str()) as u16).min(inner.width.saturating_sub(1));
     frame.set_cursor_position((inner.x + offset, inner.y));
+    rect
 }
 
-fn draw_note(frame: &mut Frame, state: &NoteState, area: Rect) {
+fn draw_note(frame: &mut Frame, state: &NoteState, area: Rect) -> Rect {
     let width = area.width.saturating_sub(8).clamp(30, 84);
-    let height = area.height.saturating_sub(6).clamp(8, 26);
+    let height = area.height.saturating_sub(8).clamp(8, 24);
     let rect = centered(area, width, height);
     frame.render_widget(Clear, rect);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(ACCENT))
-        .title(Span::styled(" 备注 ", Style::default().fg(ACCENT)));
+        .border_style(Style::default().fg(KEY))
+        .title(Span::styled(
+            " 备注 ",
+            Style::default().fg(KEY).add_modifier(Modifier::BOLD),
+        ));
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
 
@@ -251,58 +354,61 @@ fn draw_note(frame: &mut Frame, state: &NoteState, area: Rect) {
         } else {
             0
         };
-        let visible = skip_cells(chars, hscroll);
-        lines.push(Line::from(Span::styled(visible, Style::default().fg(TEXT))));
+        lines.push(Line::from(Span::styled(
+            skip_cells(chars, hscroll),
+            Style::default().fg(TEXT),
+        )));
     }
     frame.render_widget(Paragraph::new(lines), text_area);
 
-    let hint = format!(
-        " Enter 换行 · Ctrl+S / Esc 保存 · u 可撤销 · {} 行",
-        row_count
-    );
+    let hint = format!(" Enter 换行 · Esc / Ctrl+S 保存 · 点窗口外也能关 · {} 行", row_count);
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(hint, Style::default().fg(DIM)))),
         hint_area,
     );
 
     let cursor_cells = cells(&state.editor.lines[state.editor.row][..state.editor.col]);
-    let offset = if state.editor.row >= scroll {
-        let hscroll = if cursor_cells >= text_area.width as usize {
-            cursor_cells + 1 - text_area.width as usize
-        } else {
-            0
-        };
-        (cursor_cells - hscroll).min(text_area.width.saturating_sub(1) as usize) as u16
+    let hscroll = if cursor_cells >= text_area.width as usize {
+        cursor_cells + 1 - text_area.width as usize
     } else {
         0
     };
+    let offset = (cursor_cells - hscroll).min(text_area.width.saturating_sub(1) as usize) as u16;
     let cursor_row = state.editor.row.saturating_sub(scroll) as u16;
     frame.set_cursor_position((text_area.x + offset, text_area.y + cursor_row));
+    rect
 }
 
-fn draw_confirm(frame: &mut Frame, state: &ConfirmState, area: Rect) {
-    let width = 54.min(area.width.saturating_sub(4)).max(20);
+fn draw_confirm(frame: &mut Frame, state: &ConfirmState, area: Rect) -> Rect {
+    let width = 56.min(area.width.saturating_sub(4)).max(20);
     let rect = centered(area, width, 5);
     frame.render_widget(Clear, rect);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(WARN))
-        .title(Span::styled(" 确认 ", Style::default().fg(WARN)));
+        .title(Span::styled(
+            " 确认 ",
+            Style::default().fg(WARN).add_modifier(Modifier::BOLD),
+        ));
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
 
     let text = Text::from(vec![
-        Line::from(Span::styled(state.question.clone(), Style::default().fg(TEXT))),
         Line::from(Span::styled(
-            " y 确认 · 其他键取消 · u 事后可撤销",
+            state.question.clone(),
+            Style::default().fg(TEXT),
+        )),
+        Line::from(Span::styled(
+            " y 确认 · 其他键或点窗口外取消 · u 事后可撤销",
             Style::default().fg(DIM),
         )),
     ]);
     frame.render_widget(Paragraph::new(text), inner);
+    rect
 }
 
-fn draw_help(frame: &mut Frame, path: &Path, area: Rect) {
+fn draw_help(frame: &mut Frame, path: &Path, area: Rect) -> Rect {
     let pairs: &[(&str, &str)] = &[
         ("j / ↓", "下移"),
         ("k / ↑", "上移"),
@@ -311,6 +417,10 @@ fn draw_help(frame: &mut Frame, path: &Path, area: Rect) {
         ("n", "新建任务"),
         ("r", "重命名任务"),
         ("d", "删除任务"),
+        ("K / Alt+↑", "任务上移一位"),
+        ("J / Alt+↓", "任务下移一位"),
+        ("Ctrl+Home", "任务移到首位"),
+        ("Ctrl+End", "任务移到末尾"),
         ("u / Ctrl+Z", "撤销"),
         ("t / T / D", "新建 / 改名 / 删除页签"),
         ("Tab / h / l", "切换页签"),
@@ -318,15 +428,18 @@ fn draw_help(frame: &mut Frame, path: &Path, area: Rect) {
         ("q / Esc", "退出"),
     ];
 
-    let width = 60.min(area.width.saturating_sub(4)).max(30);
-    let height = (pairs.len() + 5) as u16;
+    let width = 62.min(area.width.saturating_sub(4)).max(30);
+    let height = (pairs.len() + 6) as u16;
     let rect = centered(area, width, height);
     frame.render_widget(Clear, rect);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(ACCENT))
-        .title(Span::styled(" 帮助 · 任意键关闭 ", Style::default().fg(ACCENT)));
+        .border_style(Style::default().fg(KEY))
+        .title(Span::styled(
+            " 帮助 · 任意键关闭 ",
+            Style::default().fg(KEY).add_modifier(Modifier::BOLD),
+        ));
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
 
@@ -334,18 +447,18 @@ fn draw_help(frame: &mut Frame, path: &Path, area: Rect) {
         .iter()
         .map(|(key, desc)| {
             Line::from(vec![
-                Span::styled(format!("  {key:<12}"), Style::default().fg(ACCENT)),
+                Span::styled(format!("  {key:<12}"), Style::default().fg(KEY)),
                 Span::styled(desc.to_string(), Style::default().fg(TEXT)),
             ])
         })
         .collect();
     lines.push(Line::from(Span::styled(
-        "  鼠标：左键 = 勾选 · 右键 = 备注".to_string(),
-        Style::default().fg(DIM),
+        "  鼠标：左键 = 勾选 · 右键 = 备注",
+        Style::default().fg(NOTE),
     )));
     lines.push(Line::from(Span::styled(
-        "        点页签 = 切换 · 滚轮 = 移动".to_string(),
-        Style::default().fg(DIM),
+        "        空白处双击 / 右键 = 新建 · 右键页签 = 删除",
+        Style::default().fg(NOTE),
     )));
     lines.push(Line::from(Span::styled(
         format!("  数据：{}", path.display()),
@@ -353,6 +466,7 @@ fn draw_help(frame: &mut Frame, path: &Path, area: Rect) {
     )));
 
     frame.render_widget(Paragraph::new(lines), inner);
+    rect
 }
 
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
