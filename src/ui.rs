@@ -148,7 +148,8 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-/// 选中行整体反显（方案无关的高对比），页签强调色只用在左侧竖条与复选框上。
+/// 选中行用反显做高亮块（方案无关的高对比），页签强调色只用在左侧竖条与复选框上。
+/// 备注永远是不反显的灰字，所以高亮块在任务名结束处收尾。
 fn task_spans(task: &Task, width: usize, selected: bool, accent: Color) -> Vec<Span<'static>> {
     let base = if selected {
         theme::selection()
@@ -187,10 +188,11 @@ fn task_spans(task: &Task, width: usize, selected: bool, accent: Color) -> Vec<S
     } else {
         Style::default().fg(theme::text())
     };
+    // 选中行要做成三段色块：复选框=页签强调色底、任务名=默认前景色底、
+    // 备注=灰底。灰底靠"反显 + DIM"实现——终端会把反转后的底色压暗，
+    // 这样不用写死任何 RGB，换方案时三段色块会一起变。
     let note_style = if selected {
-        // 反显下不再叠 DIM：DIM 会被终端作用到反转后的底色上，
-        // 让高亮块出现第二种灰底，反而不干净；层级交给前面那个 ` · ` 分隔符。
-        base
+        base.add_modifier(Modifier::DIM)
     } else {
         Style::default().fg(theme::dim())
     };

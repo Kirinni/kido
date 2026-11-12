@@ -104,6 +104,23 @@ impl Fixture {
         self.app.list_area.y + self.app.cur_len() as u16
     }
 
+    /// 某一行的所有单元格：(x, 符号, 前景色, 是否反显, 是否 DIM)
+    fn row_cells(&self, y: u16) -> Vec<(u16, String, Color, bool, bool)> {
+        let buffer = self.terminal.backend().buffer();
+        let mut out = Vec::new();
+        for x in 0..buffer.area.width {
+            let cell = &buffer[(x, y)];
+            out.push((
+                x,
+                cell.symbol().to_string(),
+                cell.fg,
+                cell.modifier.contains(Modifier::REVERSED),
+                cell.modifier.contains(Modifier::DIM),
+            ));
+        }
+        out
+    }
+
     fn cell_colors(&self) -> Vec<(Color, u16, u16)> {
         let buffer = self.terminal.backend().buffer();
         let mut out = Vec::new();
@@ -363,6 +380,36 @@ fn delete_task_can_be_undone() {
     fixture.key(KeyCode::Char('u'));
     assert_eq!(fixture.app.cur_len(), 2);
     assert!(fixture.saved().contains("[ ] 写周报"));
+}
+
+/// 选中行是三段色块：复选框=页签强调色底、任务名=默认前景色底、备注=灰底。
+#[test]
+fn selected_row_is_split_into_three_bands() {
+    let fixture = Fixture::new("bands");
+    let row = fixture.app.list_area.y; // 第一行默认选中
+    let cells = fixture.row_cells(row);
+
+    let accent_band = cells
+        .iter()
+        .filter(|(_, symbol, fg, reversed, _)| {
+            *reversed && *fg == Color::Green && !symbol.trim().is_empty()
+        })
+        .count();
+    assert!(accent_band >= 3, "复选框应是强调色底，实际 {accent_band} 格");
+
+    let plain_band = cells
+        .iter()
+        .filter(|(_, symbol, fg, reversed, dim)| {
+            *reversed && *fg == Color::Reset && !dim && !symbol.trim().is_empty()
+        })
+        .count();
+    assert!(plain_band >= 3, "任务名应是默认前景色底，实际 {plain_band} 格");
+
+    let gray_band = cells
+        .iter()
+        .filter(|(_, symbol, _, reversed, dim)| *reversed && *dim && !symbol.trim().is_empty())
+        .count();
+    assert!(gray_band >= 3, "备注应是灰底，实际 {gray_band} 格");
 }
 
 #[test]
