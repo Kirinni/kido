@@ -11,28 +11,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, ConfirmState, Mode, NoteState, PromptState, StatusKind};
 use crate::store::Task;
-
-const DIM: Color = Color::Rgb(104, 120, 128);
-const TEXT: Color = Color::Rgb(230, 238, 241);
-const NOTE: Color = Color::Rgb(138, 152, 158);
-const SEL_BG: Color = Color::Rgb(30, 54, 46);
-const WARN: Color = Color::Rgb(240, 186, 96);
-const ERROR: Color = Color::Rgb(240, 108, 108);
-const KEY: Color = Color::Rgb(126, 206, 226);
-
-/// 每个页签一个主题色，按顺序循环。
-const PALETTE: [Color; 6] = [
-    Color::Rgb(92, 232, 168),
-    Color::Rgb(122, 176, 255),
-    Color::Rgb(198, 152, 255),
-    Color::Rgb(255, 190, 118),
-    Color::Rgb(255, 138, 178),
-    Color::Rgb(112, 214, 226),
-];
-
-fn accent(app: &App) -> Color {
-    PALETTE[app.tab % PALETTE.len()]
-}
+use crate::theme;
 
 const HINTS: &[(&str, &str)] = &[
     ("n", "新建"),
@@ -47,7 +26,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     if area.width < 24 || area.height < 8 {
         frame.render_widget(
-            Paragraph::new("窗口太小").style(Style::default().fg(WARN)),
+            Paragraph::new("窗口太小").style(Style::default().fg(theme::warn())),
             area,
         );
         return;
@@ -75,7 +54,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 fn draw_rule(frame: &mut Frame, area: Rect) {
     let line = Line::from(Span::styled(
         "─".repeat(area.width as usize),
-        Style::default().fg(Color::Rgb(58, 74, 78)),
+        Style::default().fg(theme::dim()),
     ));
     frame.render_widget(Paragraph::new(line), area);
 }
@@ -106,7 +85,7 @@ fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut x = tabs_area.x;
     for (idx, tab) in app.store.tabs.iter().enumerate() {
         let active = idx == app.tab;
-        let color = PALETTE[idx % PALETTE.len()];
+        let color = theme::accent(idx);
         let label = format!("{}{} {}", if active { "> " } else { "  " }, idx + 1, tab.name);
         let width = UnicodeWidthStr::width(label.as_str()) as u16;
         if x + width > tabs_area.right() {
@@ -118,10 +97,10 @@ fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
                 .fg(color)
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
         } else {
-            Style::default().fg(DIM)
+            Style::default().fg(color)
         };
         spans.push(Span::styled(label, style));
-        spans.push(Span::styled("│", Style::default().fg(Color::Rgb(52, 66, 70))));
+        spans.push(Span::styled("│", Style::default().fg(theme::dim())));
         x += width + 1;
     }
     app.tab_ranges = ranges;
@@ -132,7 +111,7 @@ fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 counter_text,
-                Style::default().fg(DIM),
+                Style::default().fg(theme::dim()),
             )))
             .alignment(Alignment::Right),
             counter_area,
@@ -146,7 +125,7 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
     app.ensure_visible(height);
     let width = area.width as usize;
     let total = app.cur_len();
-    let accent = accent(app);
+    let accent = theme::accent(app.tab);
 
     let mut lines: Vec<Line> = Vec::new();
     if total == 0 {
@@ -154,7 +133,7 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
             Span::styled("  ", Style::default()),
             Span::styled(
                 "空 · 双击空白处或按 n 新建任务",
-                Style::default().fg(DIM),
+                Style::default().fg(theme::dim()),
             ),
         ]));
     } else {
@@ -162,32 +141,35 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
         for idx in app.scroll..end {
             let task = &app.store.tabs[app.tab].tasks[idx];
             let selected = idx == app.sel;
-            let mut line = Line::from(task_spans(task, width, selected, accent));
-            if selected {
-                line = line.style(Style::default().bg(SEL_BG));
-            }
-            lines.push(line);
+            lines.push(Line::from(task_spans(task, width, selected, accent)));
         }
     }
 
     frame.render_widget(Paragraph::new(lines), area);
 }
 
+/// 选中行整体反显（方案无关的高对比），页签强调色只用在左侧竖条与复选框上。
 fn task_spans(task: &Task, width: usize, selected: bool, accent: Color) -> Vec<Span<'static>> {
-    let mut spans: Vec<Span> = Vec::new();
-
-    let gutter_style = if selected {
-        Style::default().fg(accent)
+    let base = if selected {
+        theme::selection()
     } else {
         Style::default()
     };
+    let mut spans: Vec<Span> = Vec::new();
+
     spans.push(Span::styled(
         if selected { "▌ " } else { "  " },
-        gutter_style,
+        if selected {
+            base.fg(accent)
+        } else {
+            Style::default()
+        },
     ));
 
-    let mark_style = if task.done {
-        Style::default().fg(Color::Rgb(72, 92, 96))
+    let mark_style = if selected {
+        base.fg(accent)
+    } else if task.done {
+        Style::default().fg(theme::dim())
     } else {
         Style::default().fg(accent)
     };
@@ -198,10 +180,17 @@ fn task_spans(task: &Task, width: usize, selected: bool, accent: Color) -> Vec<S
 
     let indent = 6;
     let avail = width.saturating_sub(indent);
-    let text_style = if task.done {
-        Style::default().fg(DIM).add_modifier(Modifier::CROSSED_OUT)
+    let text_style = if selected {
+        base.fg(theme::text()).add_modifier(Modifier::BOLD)
+    } else if task.done {
+        theme::done()
     } else {
-        Style::default().fg(TEXT)
+        Style::default().fg(theme::text())
+    };
+    let note_style = if selected {
+        base.add_modifier(Modifier::DIM)
+    } else {
+        Style::default().fg(theme::dim())
     };
 
     let note = first_line(&task.note);
@@ -226,13 +215,14 @@ fn task_spans(task: &Task, width: usize, selected: bool, accent: Color) -> Vec<S
                 let note_text = truncate(note, rest - 3);
                 let note_width = UnicodeWidthStr::width(note_text.as_str());
                 used += 3 + note_width;
-                spans.push(Span::styled(" · ", Style::default().fg(DIM)));
-                spans.push(Span::styled(note_text, Style::default().fg(NOTE)));
+                spans.push(Span::styled(" · ", note_style));
+                spans.push(Span::styled(note_text, note_style));
             }
         }
     }
 
     if used < width {
+        // 反显只覆盖文字部分，形成"高亮块"而不是整行色带
         spans.push(Span::raw(" ".repeat(width - used)));
     }
     spans
@@ -248,10 +238,10 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let span = match &app.status {
         Some(status) => {
             let color = match status.kind {
-                StatusKind::Info => KEY,
-                StatusKind::Ok => accent(app),
-                StatusKind::Warn => WARN,
-                StatusKind::Error => ERROR,
+                StatusKind::Info => theme::info(),
+                StatusKind::Ok => theme::ok(),
+                StatusKind::Warn => theme::warn(),
+                StatusKind::Error => theme::error(),
             };
             Span::styled(format!(" {}", status.message), Style::default().fg(color))
         }
@@ -264,11 +254,11 @@ fn draw_hint(frame: &mut Frame, area: Rect) {
     let mut spans: Vec<Span> = vec![Span::raw(" ")];
     for (i, (key, desc)) in HINTS.iter().enumerate() {
         if i > 0 {
-            spans.push(Span::styled(" · ", Style::default().fg(Color::Rgb(58, 74, 78))));
+            spans.push(Span::styled(" · ", Style::default().fg(theme::dim())));
         }
-        spans.push(Span::styled(*key, Style::default().fg(KEY)));
+        spans.push(Span::styled(*key, Style::default().fg(theme::info())));
         spans.push(Span::raw(" "));
-        spans.push(Span::styled(*desc, Style::default().fg(DIM)));
+        spans.push(Span::styled(*desc, Style::default().fg(theme::dim())));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
@@ -293,10 +283,12 @@ fn draw_prompt(frame: &mut Frame, state: &PromptState, area: Rect) -> Rect {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(KEY))
+        .border_style(Style::default().fg(theme::info()))
         .title(Span::styled(
             format!(" {} ", state.title()),
-            Style::default().fg(KEY).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::info())
+                .add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
@@ -304,7 +296,7 @@ fn draw_prompt(frame: &mut Frame, state: &PromptState, area: Rect) -> Rect {
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             state.input.value(),
-            Style::default().fg(TEXT),
+            Style::default().fg(theme::text()),
         ))),
         inner,
     );
@@ -323,10 +315,12 @@ fn draw_note(frame: &mut Frame, state: &NoteState, area: Rect) -> Rect {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(KEY))
+        .border_style(Style::default().fg(theme::info()))
         .title(Span::styled(
             " 备注 ",
-            Style::default().fg(KEY).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::info())
+                .add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
@@ -356,14 +350,20 @@ fn draw_note(frame: &mut Frame, state: &NoteState, area: Rect) -> Rect {
         };
         lines.push(Line::from(Span::styled(
             skip_cells(chars, hscroll),
-            Style::default().fg(TEXT),
+            Style::default().fg(theme::text()),
         )));
     }
     frame.render_widget(Paragraph::new(lines), text_area);
 
-    let hint = format!(" Enter 换行 · Esc / Ctrl+S 保存 · 点窗口外也能关 · {} 行", row_count);
+    let hint = format!(
+        " Enter 换行 · Esc / Ctrl+S 保存 · 点窗口外也能关 · {} 行",
+        row_count
+    );
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(hint, Style::default().fg(DIM)))),
+        Paragraph::new(Line::from(Span::styled(
+            hint,
+            Style::default().fg(theme::dim()),
+        ))),
         hint_area,
     );
 
@@ -386,10 +386,12 @@ fn draw_confirm(frame: &mut Frame, state: &ConfirmState, area: Rect) -> Rect {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(WARN))
+        .border_style(Style::default().fg(theme::warn()))
         .title(Span::styled(
             " 确认 ",
-            Style::default().fg(WARN).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::warn())
+                .add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
@@ -397,11 +399,11 @@ fn draw_confirm(frame: &mut Frame, state: &ConfirmState, area: Rect) -> Rect {
     let text = Text::from(vec![
         Line::from(Span::styled(
             state.question.clone(),
-            Style::default().fg(TEXT),
+            Style::default().fg(theme::text()),
         )),
         Line::from(Span::styled(
             " y 确认 · 其他键或点窗口外取消 · u 事后可撤销",
-            Style::default().fg(DIM),
+            Style::default().fg(theme::dim()),
         )),
     ]);
     frame.render_widget(Paragraph::new(text), inner);
@@ -429,16 +431,18 @@ fn draw_help(frame: &mut Frame, path: &Path, area: Rect) -> Rect {
     ];
 
     let width = 62.min(area.width.saturating_sub(4)).max(30);
-    let height = (pairs.len() + 6) as u16;
+    let height = (pairs.len() + 7) as u16;
     let rect = centered(area, width, height);
     frame.render_widget(Clear, rect);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(KEY))
+        .border_style(Style::default().fg(theme::info()))
         .title(Span::styled(
             " 帮助 · 任意键关闭 ",
-            Style::default().fg(KEY).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::info())
+                .add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
@@ -447,22 +451,26 @@ fn draw_help(frame: &mut Frame, path: &Path, area: Rect) -> Rect {
         .iter()
         .map(|(key, desc)| {
             Line::from(vec![
-                Span::styled(format!("  {key:<12}"), Style::default().fg(KEY)),
-                Span::styled(desc.to_string(), Style::default().fg(TEXT)),
+                Span::styled(format!("  {key:<12}"), Style::default().fg(theme::info())),
+                Span::styled(desc.to_string(), Style::default().fg(theme::text())),
             ])
         })
         .collect();
     lines.push(Line::from(Span::styled(
         "  鼠标：左键 = 勾选 · 右键 = 备注",
-        Style::default().fg(NOTE),
+        Style::default().fg(theme::dim()),
     )));
     lines.push(Line::from(Span::styled(
         "        空白处双击 / 右键 = 新建 · 右键页签 = 删除",
-        Style::default().fg(NOTE),
+        Style::default().fg(theme::dim()),
     )));
     lines.push(Line::from(Span::styled(
         format!("  数据：{}", path.display()),
-        Style::default().fg(DIM),
+        Style::default().fg(theme::dim()),
+    )));
+    lines.push(Line::from(Span::styled(
+        "  配色：只用 ANSI 16 色，跟随终端配色方案",
+        Style::default().fg(theme::dim()),
     )));
 
     frame.render_widget(Paragraph::new(lines), inner);

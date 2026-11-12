@@ -7,6 +7,7 @@ use kido::app::{App, Mode};
 use kido::store::Store;
 use kido::ui;
 use ratatui::backend::TestBackend;
+use ratatui::style::{Color, Modifier};
 use ratatui::Terminal;
 use unicode_width::UnicodeWidthChar;
 
@@ -101,6 +102,19 @@ impl Fixture {
     /// 第一条空白行的屏幕坐标（在最后一个任务下面）。
     fn blank_row(&self) -> u16 {
         self.app.list_area.y + self.app.cur_len() as u16
+    }
+
+    fn cell_colors(&self) -> Vec<(Color, u16, u16)> {
+        let buffer = self.terminal.backend().buffer();
+        let mut out = Vec::new();
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                let cell = &buffer[(x, y)];
+                out.push((cell.fg, x, y));
+                out.push((cell.bg, x, y));
+            }
+        }
+        out
     }
 }
 
@@ -361,3 +375,36 @@ fn external_edit_is_picked_up() {
     assert_eq!(fixture.app.store.tabs[0].name, "外部");
     assert!(fixture.screen().contains("换过了"));
 }
+
+/// 只用终端 16 色，才能被 Windows Terminal 的配色方案染色。
+#[test]
+fn only_ansi_palette_colors_are_used() {
+    let mut fixture = Fixture::new("palette");
+    fixture.key(KeyCode::Char(' '));
+    let mut used: Vec<Color> = Vec::new();
+    for (color, x, y) in fixture.cell_colors() {
+        assert!(
+            !matches!(color, Color::Rgb(..)),
+            "({x},{y}) 用了 truecolor，会绕开终端配色方案"
+        );
+        used.push(color);
+    }
+    assert!(
+        used.contains(&Color::Green) || used.contains(&Color::Blue),
+        "页签强调色没有落在 ANSI 调色板上"
+    );
+}
+
+#[test]
+fn selection_uses_reverse_video_instead_of_a_hardcoded_background() {
+    let fixture = Fixture::new("reverse");
+    let row = fixture.app.list_area.y;
+    let buffer = fixture.terminal.backend().buffer();
+    let cell = &buffer[(2, row)];
+    assert!(
+        cell.modifier.contains(Modifier::REVERSED),
+        "选中行应该用反显，而不是写死底色"
+    );
+    assert!(!matches!(cell.bg, Color::Rgb(..)));
+}
+

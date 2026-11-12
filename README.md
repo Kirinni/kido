@@ -65,6 +65,19 @@ kido --uninstall -k     # 保留 todo.txt
 
 有备注的任务会在标题后面跟一段灰字摘要（`· 备注首行`），太长会以省略号截断。
 
+## 配色
+
+kido **只用终端的 16 色 ANSI 调色板**，不写死 RGB。所以 Windows Terminal 里换「配色方案」时，kido 会跟着变：
+
+- 六个页签依次取 green / blue / magenta / cyan / yellow / bright cyan
+- 正文用方案里的默认前景色，灰字/备注/分隔线用 bright black（槽位 8，多数方案专门留给灰字）
+- 状态提示：成功绿、警告黄、错误红、普通信息青
+- 选中行用**反显**而不是固定底色，任何方案下都有对比度
+
+换配色方案：Windows Terminal → 设置 → 外观 → 配色方案 → 选一个（例如 One Half Dark / Campbell / Solarized），新开的标签页立刻生效。
+
+> 代价是不再能自定义十六进制颜色。如果你想要"方案之外再叠一层自定义色"，可以改 [src/theme.rs](src/theme.rs) 里的 `ACCENTS`，把 `Color::Green` 换成 `Color::Rgb(r, g, b)` —— 但那样这些元素就不再跟随终端方案了。
+
 ## 数据格式
 
 ```text

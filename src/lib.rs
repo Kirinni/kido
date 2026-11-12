@@ -6,6 +6,7 @@ pub mod app;
 pub mod cli;
 pub mod editor;
 pub mod store;
+pub mod theme;
 pub mod ui;
 
 #[cfg(windows)]
@@ -135,3 +136,4 @@ pub fn uninstall(keep_data: bool) -> io::Result<()> {
     println!("  完成，程序和目录会在几秒后消失");
     Ok(())
 }
+
