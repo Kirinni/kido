@@ -188,7 +188,9 @@ fn task_spans(task: &Task, width: usize, selected: bool, accent: Color) -> Vec<S
         Style::default().fg(theme::text())
     };
     let note_style = if selected {
-        base.add_modifier(Modifier::DIM)
+        // 反显下不再叠 DIM：DIM 会被终端作用到反转后的底色上，
+        // 让高亮块出现第二种灰底，反而不干净；层级交给前面那个 ` · ` 分隔符。
+        base
     } else {
         Style::default().fg(theme::dim())
     };
